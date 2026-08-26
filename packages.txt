@@ -1,1 +1,2 @@
 # One AUR package base per line. Lines starting with # are ignored.
+ayugram-desktop
