@@ -1,0 +1,228 @@
+name: build
+
+on:
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Rebuild all packages regardless of version
+        type: boolean
+        default: false
+      package:
+        description: Rebuild only this package (regardless of version)
+        type: string
+        default: ''
+  push:
+    branches: [main]
+    paths: [packages.txt, .github/workflows/build.yml]
+
+# serialize runs so two publishes never race the release assets
+concurrency:
+  group: build
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    outputs:
+      matrix: ${{ steps.diff.outputs.matrix }}
+      count: ${{ steps.diff.outputs.count }}
+    steps:
+      - name: Setup
+        run: |
+          pacman -Syu --noconfirm git jq
+          useradd -m builder
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: srcdest
+          key: srcdest-${{ github.run_id }}
+          restore-keys: srcdest-
+      - name: Compute build matrix
+        id: diff
+        env:
+          FORCE: ${{ inputs.force }}
+          ONLY_PKG: ${{ inputs.package }}
+        run: |
+          set -euo pipefail
+          export SRCDEST="$PWD/srcdest"
+          mkdir -p "$SRCDEST" aur
+          chown -R builder "$SRCDEST"
+
+          curl -fsSL -o x86_64.db "https://github.com/$GITHUB_REPOSITORY/releases/download/repo-x86_64/zxcaur.db" || true
+          curl -fsSL -o aarch64.db "https://github.com/$GITHUB_REPOSITORY/releases/download/repo-aarch64/zxcaur.db" || true
+
+          db_ver() { # $1=arch $2=pkgname -> published version, empty if absent
+            [ -f "$1.db" ] || return 0
+            local re
+            re=$(printf '%s' "$2" | sed 's/[.+]/\\&/g')
+            tar -tf "$1.db" 2>/dev/null | sed -n "s|^${re}-\([^-]*-[^-]*\)/\$|\1|p"
+          }
+
+          srcinfo_ver() { # .SRCINFO on stdin -> [epoch:]pkgver-pkgrel
+            awk -F' = ' '/^\tepoch/{e=$2":"} /^\tpkgver/{v=$2} /^\tpkgrel/{r=$2} END{printf "%s%s-%s", e, v, r}'
+          }
+
+          entries='[]'
+          while IFS= read -r -u3 pkg || [ -n "$pkg" ]; do
+            case "$pkg" in ''|'#'*) continue ;; esac
+            if [ -n "$ONLY_PKG" ] && [ "$pkg" != "$ONLY_PKG" ]; then continue; fi
+
+            git clone --depth=1 "https://aur.archlinux.org/$pkg.git" "aur/$pkg" </dev/null
+            [ -f "aur/$pkg/PKGBUILD" ] || { echo "::error::$pkg: no such package on AUR"; exit 1; }
+            chown -R builder "aur/$pkg"
+
+            if grep -Eq '^[[:space:]]*pkgver[[:space:]]*\(\)' "aur/$pkg/PKGBUILD"; then
+              # VCS package: fetch sources and run pkgver() to learn the live upstream version.
+              # --noprepare keeps patching out of the check; drop it if a pkgver() ever needs prepare().
+              (cd "aur/$pkg" && sudo -u builder env SRCDEST="$SRCDEST" makepkg -od --noprepare --skippgpcheck </dev/null >&2)
+              srcinfo=$(cd "aur/$pkg" && sudo -u builder makepkg --printsrcinfo)
+            else
+              srcinfo=$(cat "aur/$pkg/.SRCINFO")
+            fi
+            ver=$(printf '%s\n' "$srcinfo" | srcinfo_ver)
+            names=$(printf '%s\n' "$srcinfo" | sed -n 's/^pkgname = //p')
+            arches=$(printf '%s\n' "$srcinfo" | sed -n 's/^\tarch = //p' | sort -u)
+
+            if printf '%s\n' "$arches" | grep -qx any; then
+              targets=any
+            else
+              targets=""
+              printf '%s\n' "$arches" | grep -qx x86_64 && targets="x86_64"
+              printf '%s\n' "$arches" | grep -qx aarch64 && targets="$targets aarch64"
+              [ -n "$targets" ] || echo "::warning::$pkg supports neither x86_64 nor aarch64 (arch: $arches)"
+            fi
+
+            for t in $targets; do
+              if [ "$t" = any ]; then dbs="x86_64 aarch64"; else dbs="$t"; fi
+              need=0
+              if [ "$FORCE" = true ] || [ -n "$ONLY_PKG" ]; then need=1; fi
+              for d in $dbs; do
+                for n in $names; do
+                  have=$(db_ver "$d" "$n")
+                  if [ -z "$have" ] || [ "$(vercmp "$ver" "$have")" -gt 0 ]; then need=1; fi
+                done
+              done
+              if [ "$need" = 1 ]; then
+                if [ "$t" = aarch64 ]; then runner=ubuntu-24.04-arm; image=menci/archlinuxarm:base-devel
+                else runner=ubuntu-latest; image=archlinux:base-devel; fi
+                echo "$pkg ($t) $ver: build"
+                entries=$(printf '%s' "$entries" | jq -c --arg p "$pkg" --arg a "$t" --arg r "$runner" --arg i "$image" \
+                  '. + [{pkg: $p, arch: $a, runner: $r, image: $i}]')
+              else
+                echo "$pkg ($t) $ver: up to date"
+              fi
+            done
+          done 3< packages.txt
+
+          echo "matrix=$(printf '%s' "$entries" | jq -c '{include: .}')" >> "$GITHUB_OUTPUT"
+          echo "count=$(printf '%s' "$entries" | jq length)" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: check
+    if: needs.check.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.check.outputs.matrix) }}
+    name: ${{ matrix.pkg }} (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    container: ${{ matrix.image }}
+    timeout-minutes: 330  # runner hard limit is 360; fail visibly before it
+    steps:
+      - name: Setup
+        run: |
+          set -eu
+          # resolve already-published packages as dependencies, once the repo exists
+          if curl -fsIL "https://github.com/$GITHUB_REPOSITORY/releases/download/repo-$(uname -m)/zxcaur.db" >/dev/null 2>&1; then
+            printf '[zxcaur]\nSigLevel = Optional TrustAll\nServer = https://github.com/%s/releases/download/repo-$arch\n' "$GITHUB_REPOSITORY" >> /etc/pacman.conf
+          fi
+          pacman -Syu --noconfirm git
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+      - uses: actions/cache@v4
+        with:
+          path: srcdest
+          key: srcdest-${{ github.run_id }}-${{ matrix.pkg }}-${{ matrix.arch }}
+          restore-keys: |
+            srcdest-${{ github.run_id }}
+            srcdest-
+      - name: Build
+        run: |
+          set -euo pipefail
+          export SRCDEST="$PWD/srcdest" PKGDEST="$PWD/pkgdest"
+          mkdir -p "$SRCDEST" "$PKGDEST"
+          git clone --depth=1 "https://aur.archlinux.org/${{ matrix.pkg }}.git" pkgbuild
+          chown -R builder "$SRCDEST" "$PKGDEST" pkgbuild
+          cd pkgbuild
+          sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" makepkg -s --noconfirm --skippgpcheck </dev/null
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.pkg }}-${{ matrix.arch }}
+          path: pkgdest/*.pkg.tar.zst
+          if-no-files-found: error
+
+  publish:
+    needs: [check, build]
+    if: ${{ !cancelled() && needs.check.outputs.count != '0' }}
+    strategy:
+      matrix:
+        arch: [x86_64, aarch64]
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: repo-${{ matrix.arch }}
+    steps:
+      - name: Setup
+        run: pacman -Syu --noconfirm github-cli
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-${{ matrix.arch }}'
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*-any'
+          path: dist
+          merge-multiple: true
+      - name: Update repo
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          files=(dist/*.pkg.tar.zst)
+          if [ ${#files[@]} -eq 0 ]; then echo "nothing to publish for $TAG"; exit 0; fi
+
+          gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --latest=false \
+              --title "pacman repo (${{ matrix.arch }})" \
+              --notes "Rolling pacman repository. Consume with pacman, not by hand."
+
+          mkdir repo
+          gh release download "$TAG" -R "$GITHUB_REPOSITORY" -D repo \
+            -p zxcaur.db.tar.gz -p zxcaur.files.tar.gz || true
+          cp "${files[@]}" repo/
+          (cd repo && repo-add zxcaur.db.tar.gz *.pkg.tar.zst)
+
+          # delete release assets superseded by this publish (same pkgname, older version)
+          assets=$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json assets -q '.assets[].name')
+          for f in "${files[@]}"; do
+            b=$(basename "$f")
+            name=${b%-*-*-*.pkg.tar.zst}
+            re=$(printf '%s' "$name" | sed 's/[.+]/\\&/g')
+            old=$(printf '%s\n' "$assets" \
+              | grep -E "^${re}-[^-]+-[^-]+-[^-]+\.pkg\.tar\.zst$" \
+              | grep -vxF "$b" || true)
+            for o in $old; do gh release delete-asset "$TAG" "$o" -R "$GITHUB_REPOSITORY" -y; done
+          done
+
+          # pacman fetches zxcaur.db / zxcaur.files: publish the archives under both names
+          rm -f repo/zxcaur.db repo/zxcaur.files
+          cp repo/zxcaur.db.tar.gz repo/zxcaur.db
+          cp repo/zxcaur.files.tar.gz repo/zxcaur.files
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" --clobber \
+            "${files[@]}" repo/zxcaur.db repo/zxcaur.db.tar.gz repo/zxcaur.files repo/zxcaur.files.tar.gz
