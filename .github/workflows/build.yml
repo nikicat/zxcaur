@@ -139,10 +139,11 @@ jobs:
           # pacman's landlock sandbox can't apply inside docker; the official x86_64
           # image ships with it disabled, the ALARM image does not
           sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
-          # LTO-linking tdesktop-class packages OOMs the 16 GB runners; default to
-          # no LTO (a PKGBUILD's explicit options=(lto) still overrides this)
+          # LTO-linking tdesktop-class packages OOMs the 16 GB runners, and their
+          # debug info overflows 32-bit relocations at link (ALARM is !debug already);
+          # default both off -- a PKGBUILD's explicit options=() still overrides this
           # TODO: try LTOFLAGS='-flto=1' instead (serial LTO link may fit in RAM)
-          echo 'OPTIONS+=(!lto)' >> /etc/makepkg.conf
+          echo 'OPTIONS+=(!lto !debug)' >> /etc/makepkg.conf
           # ALARM's makepkg.conf still defaults PKGEXT to .pkg.tar.xz; force zst so
           # package filenames are uniform across arches
           echo "PKGEXT='.pkg.tar.zst'" >> /etc/makepkg.conf
