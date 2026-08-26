@@ -68,7 +68,10 @@ jobs:
             case "$pkg" in ''|'#'*) continue ;; esac
             if [ -n "$ONLY_PKG" ] && [ "$pkg" != "$ONLY_PKG" ]; then continue; fi
 
-            git clone --depth=1 "https://aur.archlinux.org/$pkg.git" "aur/$pkg" </dev/null
+            # aur.archlinux.org drops connections from cloud IPs at times; prefer the
+            # official GitHub mirror (branch per package), fall back to the AUR itself
+            git clone --depth=1 -b "$pkg" https://github.com/archlinux/aur.git "aur/$pkg" </dev/null 2>/dev/null \
+              || git clone --depth=1 "https://aur.archlinux.org/$pkg.git" "aur/$pkg" </dev/null
             [ -f "aur/$pkg/PKGBUILD" ] || { echo "::error::$pkg: no such package on AUR"; exit 1; }
             chown -R builder "aur/$pkg"
 
@@ -162,7 +165,8 @@ jobs:
           set -euo pipefail
           export SRCDEST="$PWD/srcdest" PKGDEST="$PWD/pkgdest"
           mkdir -p "$SRCDEST" "$PKGDEST"
-          git clone --depth=1 "https://aur.archlinux.org/${{ matrix.pkg }}.git" pkgbuild
+          git clone --depth=1 -b "${{ matrix.pkg }}" https://github.com/archlinux/aur.git pkgbuild 2>/dev/null \
+            || git clone --depth=1 "https://aur.archlinux.org/${{ matrix.pkg }}.git" pkgbuild
           chown -R builder "$SRCDEST" "$PKGDEST" pkgbuild
           cd pkgbuild
           sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" makepkg -s --noconfirm --skippgpcheck </dev/null
