@@ -143,6 +143,9 @@ jobs:
           # no LTO (a PKGBUILD's explicit options=(lto) still overrides this)
           # TODO: try LTOFLAGS='-flto=1' instead (serial LTO link may fit in RAM)
           echo 'OPTIONS+=(!lto)' >> /etc/makepkg.conf
+          # ALARM's makepkg.conf still defaults PKGEXT to .pkg.tar.xz; force zst so
+          # package filenames are uniform across arches
+          echo "PKGEXT='.pkg.tar.zst'" >> /etc/makepkg.conf
           pacman -Syu --noconfirm git github-cli
           useradd -m builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
