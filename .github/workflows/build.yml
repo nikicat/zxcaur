@@ -139,6 +139,10 @@ jobs:
           # pacman's landlock sandbox can't apply inside docker; the official x86_64
           # image ships with it disabled, the ALARM image does not
           sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
+          # LTO-linking tdesktop-class packages OOMs the 16 GB runners; default to
+          # no LTO (a PKGBUILD's explicit options=(lto) still overrides this)
+          # TODO: try LTOFLAGS='-flto=1' instead (serial LTO link may fit in RAM)
+          echo 'OPTIONS+=(!lto)' >> /etc/makepkg.conf
           pacman -Syu --noconfirm git github-cli
           useradd -m builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
