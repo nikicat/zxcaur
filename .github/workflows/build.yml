@@ -141,6 +141,9 @@ jobs:
           if curl -fsIL "https://github.com/$GITHUB_REPOSITORY/releases/download/repo-$(uname -m)/zxcaur.db" >/dev/null 2>&1; then
             printf '[zxcaur]\nSigLevel = Optional TrustAll\nServer = https://github.com/%s/releases/download/repo-$arch\n' "$GITHUB_REPOSITORY" >> /etc/pacman.conf
           fi
+          # pacman's landlock sandbox can't apply inside docker; the official x86_64
+          # image ships with it disabled, the ALARM image does not
+          sed -i '/^\[options\]/a DisableSandbox' /etc/pacman.conf
           pacman -Syu --noconfirm git
           useradd -m builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
