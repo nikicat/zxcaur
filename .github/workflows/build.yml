@@ -66,6 +66,10 @@ jobs:
           entries='[]'
           while IFS= read -r -u3 pkg || [ -n "$pkg" ]; do
             case "$pkg" in ''|'#'*) continue ;; esac
+            # optional "pkg@arch1,arch2" forces those build targets; used to build
+            # per-arch native packages for PKGBUILDs that wrongly declare arch=any
+            arch_override=""
+            case "$pkg" in *@*) arch_override=${pkg#*@}; pkg=${pkg%@*} ;; esac
             if [ -n "$ONLY_PKG" ] && [ "$pkg" != "$ONLY_PKG" ]; then continue; fi
 
             # aur.archlinux.org drops connections from cloud IPs at times; prefer the
@@ -95,6 +99,8 @@ jobs:
               printf '%s\n' "$arches" | grep -qx aarch64 && targets="$targets aarch64"
               [ -n "$targets" ] || echo "::warning::$pkg supports neither x86_64 nor aarch64 (arch: $arches)"
             fi
+
+            if [ -n "$arch_override" ]; then targets=${arch_override//,/ }; fi
 
             for t in $targets; do
               if [ "$t" = any ]; then dbs="x86_64 aarch64"; else dbs="$t"; fi

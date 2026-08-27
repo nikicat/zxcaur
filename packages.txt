@@ -1,3 +1,7 @@
 # One AUR package base per line. Lines starting with # are ignored.
 ayugram-desktop
 claude-code
+run0-sudo-shim@x86_64,aarch64
+linear-cli-finesssee
+python-dlib
+ccache-ext
