@@ -26,8 +26,10 @@ builds anything listed that is missing or outdated in the published repo.
   new upstream commit triggers a rebuild without any AUR-side bump.
 - Split packages: list the pkgbase; all split packages get published.
 - `arch=any` packages are built once and published to both arches.
-- `pkg@x86_64,aarch64` in `packages.txt` forces per-arch builds -- for
-  PKGBUILDs that compile native code but wrongly declare `arch=any`.
+- `pkg@x86_64,aarch64` in `packages.txt` forces those build targets
+  regardless of the declared `arch=` (built with `--ignorearch`) -- for
+  PKGBUILDs that wrongly declare `any`, or x86_64-only labels that build
+  fine on other arches.
 - AUR dependencies must be listed too. Build containers have this repo in
   their pacman.conf, so already-published packages resolve as dependencies.
   Adding a dependent and its AUR dep in one push makes the dependent's first

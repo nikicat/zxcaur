@@ -66,8 +66,9 @@ jobs:
           entries='[]'
           while IFS= read -r -u3 pkg || [ -n "$pkg" ]; do
             case "$pkg" in ''|'#'*) continue ;; esac
-            # optional "pkg@arch1,arch2" forces those build targets; used to build
-            # per-arch native packages for PKGBUILDs that wrongly declare arch=any
+            # optional "pkg@arch1,arch2" forces those build targets regardless of the
+            # declared arch= (wrongly-any packages, or x86_64-only labels that build
+            # fine elsewhere); paired with --ignorearch at makepkg time
             arch_override=""
             case "$pkg" in *@*) arch_override=${pkg#*@}; pkg=${pkg%@*} ;; esac
             if [ -n "$ONLY_PKG" ] && [ "$pkg" != "$ONLY_PKG" ]; then continue; fi
@@ -175,7 +176,7 @@ jobs:
             || git clone --depth=1 "https://aur.archlinux.org/${{ matrix.pkg }}.git" pkgbuild
           chown -R builder "$SRCDEST" "$PKGDEST" pkgbuild
           cd pkgbuild
-          sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" makepkg -s --noconfirm --skippgpcheck </dev/null
+          sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" makepkg -s --noconfirm --skippgpcheck --ignorearch </dev/null
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.pkg }}-${{ matrix.arch }}
