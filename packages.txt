@@ -10,3 +10,5 @@ prek@x86_64,aarch64
 google-cloud-cli
 google-chrome
 firebase-tools@x86_64,aarch64
+brave-bin
+bisq
