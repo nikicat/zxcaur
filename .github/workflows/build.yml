@@ -63,6 +63,14 @@ jobs:
             awk -F' = ' '/^\tepoch/{e=$2":"} /^\tpkgver/{v=$2} /^\tpkgrel/{r=$2} END{printf "%s%s-%s", e, v, r}'
           }
 
+          srcinfo_names() { # $1=arch; .SRCINFO on stdin -> split names built for that arch
+            awk -v a="$1" -F' = ' '
+              function flush() { if (n && (!has || ok)) print n }
+              /^pkgname = /  { flush(); n=$2; has=0; ok=0 }
+              /^\tarch = /   { if (n) { has=1; if ($2==a || $2=="any") ok=1 } }
+              END            { flush() }'
+          }
+
           entries='[]'
           while IFS= read -r -u3 pkg || [ -n "$pkg" ]; do
             case "$pkg" in ''|'#'*) continue ;; esac
@@ -89,7 +97,6 @@ jobs:
               srcinfo=$(cat "aur/$pkg/.SRCINFO")
             fi
             ver=$(printf '%s\n' "$srcinfo" | srcinfo_ver)
-            names=$(printf '%s\n' "$srcinfo" | sed -n 's/^pkgname = //p')
             arches=$(printf '%s\n' "$srcinfo" | sed -n 's/^\tarch = //p' | sort -u)
 
             if printf '%s\n' "$arches" | grep -qx any; then
@@ -108,7 +115,8 @@ jobs:
               need=0
               if [ "$FORCE" = true ] || [ -n "$ONLY_PKG" ]; then need=1; fi
               for d in $dbs; do
-                for n in $names; do
+                # per-split arch overrides mean not every split exists on every arch
+                for n in $(printf '%s\n' "$srcinfo" | srcinfo_names "$d"); do
                   have=$(db_ver "$d" "$n")
                   if [ -z "$have" ] || [ "$(vercmp "$ver" "$have")" -gt 0 ]; then need=1; fi
                 done
@@ -116,9 +124,11 @@ jobs:
               if [ "$need" = 1 ]; then
                 if [ "$t" = aarch64 ]; then runner=ubuntu-24.04-arm; image=menci/archlinuxarm:base-devel@sha256:bad7da18bd6d4766450075dc59157b6d7e24f50c00a8d2377b88d7d540f2b47d
                 else runner=ubuntu-latest; image=archlinux:base-devel@sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb965c03b2b87b915760d; fi
+                mkargs=""
+                if [ -n "$arch_override" ]; then mkargs="--ignorearch"; fi
                 echo "$pkg ($t) $ver: build"
-                entries=$(printf '%s' "$entries" | jq -c --arg p "$pkg" --arg a "$t" --arg r "$runner" --arg i "$image" \
-                  '. + [{pkg: $p, arch: $a, runner: $r, image: $i}]')
+                entries=$(printf '%s' "$entries" | jq -c --arg p "$pkg" --arg a "$t" --arg r "$runner" --arg i "$image" --arg m "$mkargs" \
+                  '. + [{pkg: $p, arch: $a, runner: $r, image: $i, mkargs: $m}]')
               else
                 echo "$pkg ($t) $ver: up to date"
               fi
@@ -176,7 +186,7 @@ jobs:
             || git clone --depth=1 "https://aur.archlinux.org/${{ matrix.pkg }}.git" pkgbuild
           chown -R builder "$SRCDEST" "$PKGDEST" pkgbuild
           cd pkgbuild
-          sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" makepkg -s --noconfirm --skippgpcheck --ignorearch </dev/null
+          sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" makepkg -s --noconfirm --skippgpcheck ${{ matrix.mkargs }} </dev/null
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.pkg }}-${{ matrix.arch }}
