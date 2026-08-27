@@ -12,3 +12,5 @@ google-chrome
 firebase-tools@x86_64,aarch64
 brave-bin
 bisq
+python-pathvalidate
+electron-cash@x86_64,aarch64
