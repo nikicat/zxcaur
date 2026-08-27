@@ -5,3 +5,8 @@ run0-sudo-shim@x86_64,aarch64
 linear-cli-finesssee
 python-dlib
 ccache-ext
+flyctl
+prek
+google-cloud-cli
+google-chrome
+firebase-tools
