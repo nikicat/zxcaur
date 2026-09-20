@@ -14,3 +14,4 @@ brave-bin
 bisq
 python-pathvalidate
 electron-cash@x86_64,aarch64
+bisq2
