@@ -186,6 +186,14 @@ jobs:
             || git clone --depth=1 "https://aur.archlinux.org/${{ matrix.pkg }}.git" pkgbuild
           chown -R builder "$SRCDEST" "$PKGDEST" pkgbuild
           cd pkgbuild
+          # some PKGBUILDs wrap a source in a web.archive.org URL; archive.org 503s
+          # on runner IPs, so seed SRCDEST from the wrapped origin instead. makepkg
+          # still verifies checksums, so a wrong seed fails loudly rather than silently
+          sudo -u builder makepkg --printsrcinfo | sed -n 's/^\tsource[^ ]* = //p' | while IFS= read -r s; do
+            case $s in *"::"*) fn=${s%%::*}; url=${s#*::} ;; *) url=$s; fn=${s##*/} ;; esac
+            case $url in https://web.archive.org/*://*) orig=${url#https://web.archive.org/}; orig=${orig#web/*/} ;; *) continue ;; esac
+            [ -e "$SRCDEST/$fn" ] || sudo -u builder curl -fsSL -o "$SRCDEST/$fn" "$orig" || rm -f "$SRCDEST/$fn"
+          done
           sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" makepkg -s --noconfirm --skippgpcheck ${{ matrix.mkargs }} </dev/null
           # GitHub artifact/asset names reject ':' (epoch); pacman fetches by the
           # db FILENAME, so a rename is safe
