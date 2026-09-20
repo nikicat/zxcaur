@@ -74,6 +74,11 @@ jobs:
           entries='[]'
           while IFS= read -r -u3 pkg || [ -n "$pkg" ]; do
             case "$pkg" in ''|'#'*) continue ;; esac
+            # optional trailing "VAR=VAL ..." goes into makepkg's environment for
+            # that package -- the knob some build scripts need to stay unattended.
+            # Split before the @arch suffix, which it follows
+            pkgenv=""
+            case "$pkg" in *' '*) pkgenv=${pkg#* }; pkg=${pkg%% *} ;; esac
             # optional "pkg@arch1,arch2" forces those build targets regardless of the
             # declared arch= (wrongly-any packages, or x86_64-only labels that build
             # fine elsewhere); paired with --ignorearch at makepkg time
@@ -91,7 +96,7 @@ jobs:
             if grep -Eq '^[[:space:]]*pkgver[[:space:]]*\(\)' "aur/$pkg/PKGBUILD"; then
               # VCS package: fetch sources and run pkgver() to learn the live upstream version.
               # --noprepare keeps patching out of the check; drop it if a pkgver() ever needs prepare().
-              (cd "aur/$pkg" && sudo -u builder env SRCDEST="$SRCDEST" makepkg -od --noprepare --skippgpcheck </dev/null >&2)
+              (cd "aur/$pkg" && sudo -u builder env SRCDEST="$SRCDEST" $pkgenv makepkg -od --noprepare --skippgpcheck </dev/null >&2)
               srcinfo=$(cd "aur/$pkg" && sudo -u builder makepkg --printsrcinfo)
             else
               srcinfo=$(cat "aur/$pkg/.SRCINFO")
@@ -127,8 +132,8 @@ jobs:
                 mkargs=""
                 if [ -n "$arch_override" ]; then mkargs="--ignorearch"; fi
                 echo "$pkg ($t) $ver: build"
-                entries=$(printf '%s' "$entries" | jq -c --arg p "$pkg" --arg a "$t" --arg r "$runner" --arg i "$image" --arg m "$mkargs" \
-                  '. + [{pkg: $p, arch: $a, runner: $r, image: $i, mkargs: $m}]')
+                entries=$(printf '%s' "$entries" | jq -c --arg p "$pkg" --arg a "$t" --arg r "$runner" --arg i "$image" --arg m "$mkargs" --arg e "$pkgenv" \
+                  '. + [{pkg: $p, arch: $a, runner: $r, image: $i, mkargs: $m, env: $e}]')
               else
                 echo "$pkg ($t) $ver: up to date"
               fi
@@ -194,7 +199,7 @@ jobs:
             case $url in https://web.archive.org/*://*) orig=${url#https://web.archive.org/}; orig=${orig#web/*/} ;; *) continue ;; esac
             [ -e "$SRCDEST/$fn" ] || sudo -u builder curl -fsSL -o "$SRCDEST/$fn" "$orig" || rm -f "$SRCDEST/$fn"
           done
-          sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" makepkg -s --noconfirm --skippgpcheck ${{ matrix.mkargs }} </dev/null
+          sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" ${{ matrix.env }} makepkg -s --noconfirm --skippgpcheck ${{ matrix.mkargs }} </dev/null
           # GitHub artifact/asset names reject ':' (epoch); pacman fetches by the
           # db FILENAME, so a rename is safe
           for f in "$PKGDEST"/*:*; do if [ -e "$f" ]; then mv "$f" "${f//:/.}"; fi; done

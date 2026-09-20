@@ -30,6 +30,9 @@ builds anything listed that is missing or outdated in the published repo.
   regardless of the declared `arch=` (built with `--ignorearch`) -- for
   PKGBUILDs that wrongly declare `any`, or x86_64-only labels that build
   fine on other arches.
+- `pkg VAR=VAL ...` passes those variables into makepkg's environment for
+  that package -- for build scripts that prompt unless a knob is set (e.g.
+  `osxcross-git ... BUILD_FLAVOR=stable`). Combines with `@arch`.
 - AUR dependencies must be listed too. Build containers have this repo in
   their pacman.conf, so already-published packages resolve as dependencies.
   Adding a dependent and its AUR dep in one push makes the dependent's first
