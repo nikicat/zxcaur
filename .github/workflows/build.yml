@@ -49,8 +49,17 @@ jobs:
           mkdir -p "$SRCDEST" aur
           chown -R builder "$SRCDEST"
 
-          curl -fsSL -o x86_64.db "https://github.com/$GITHUB_REPOSITORY/releases/download/repo-x86_64/zxcaur.db" || true
-          curl -fsSL -o aarch64.db "https://github.com/$GITHUB_REPOSITORY/releases/download/repo-aarch64/zxcaur.db" || true
+          # only a release that does not exist yet means "nothing published": a fetch
+          # failure read as an empty db rebuilds and republishes every package at once
+          for arch in x86_64 aarch64; do
+            curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o "$arch.db" \
+              "https://github.com/$GITHUB_REPOSITORY/releases/download/repo-$arch/zxcaur.db" && continue
+            rm -f "$arch.db"
+            if curl -fsI "https://github.com/$GITHUB_REPOSITORY/releases/tag/repo-$arch" >/dev/null 2>&1; then
+              echo "::error::repo-$arch exists but zxcaur.db could not be fetched"
+              exit 1
+            fi
+          done
 
           db_ver() { # $1=arch $2=pkgname -> published version, empty if absent
             [ -f "$1.db" ] || return 0
@@ -199,7 +208,11 @@ jobs:
             case $url in https://web.archive.org/*://*) orig=${url#https://web.archive.org/}; orig=${orig#web/*/} ;; *) continue ;; esac
             [ -e "$SRCDEST/$fn" ] || sudo -u builder curl -fsSL -o "$SRCDEST/$fn" "$orig" || rm -f "$SRCDEST/$fn"
           done
-          sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" ${{ matrix.env }} makepkg -s --noconfirm --skippgpcheck ${{ matrix.mkargs }} </dev/null
+          build() { sudo -u builder env SRCDEST="$SRCDEST" PKGDEST="$PKGDEST" ${{ matrix.env }} makepkg -s --noconfirm --skippgpcheck ${{ matrix.mkargs }} </dev/null; }
+          # a sibling job republishing between our db sync and our dependency download
+          # leaves a stale checksum (a rebuild reuses the filename) or a deleted asset.
+          # makepkg exits 8 only on a failed dep install, so retry that one after a resync
+          build || { rc=$?; [ "$rc" = 8 ] || exit "$rc"; pacman -Syu --noconfirm; build; }
           # GitHub artifact/asset names reject ':' (epoch); pacman fetches by the
           # db FILENAME, so a rename is safe
           for f in "$PKGDEST"/*:*; do if [ -e "$f" ]; then mv "$f" "${f//:/.}"; fi; done
