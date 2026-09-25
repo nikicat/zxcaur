@@ -57,3 +57,10 @@ builds anything listed that is missing or outdated in the published repo.
   manually if it matters.
 - aarch64 builds run natively on `ubuntu-24.04-arm` runners in an
   Arch Linux ARM container.
+- `visual-studio-code-electron-bin` is built from
+  [a fork](https://github.com/nikicat/visual-studio-code-electron-bin) whose
+  `pkgver()` asks the VS Code update API, so new releases rebuild without an
+  AUR bump. It runs on the system Electron, which Arch Linux ARM does not
+  package: aarch64 gets `electronNN-bin` from here. When VS Code moves to a new
+  Electron major, bump `_electronversion` in the fork and the `electronNN-bin`
+  line in `packages.txt` together.
