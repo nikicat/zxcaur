@@ -17,4 +17,5 @@ electron-cash@x86_64,aarch64
 bisq2
 icu74
 osxcross-git@x86_64,aarch64 BUILD_FLAVOR=stable
+electron43-bin@aarch64
 https://github.com/nikicat/visual-studio-code-electron-bin.git
