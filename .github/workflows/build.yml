@@ -46,7 +46,7 @@ jobs:
         run: |
           set -euo pipefail
           export SRCDEST="$PWD/srcdest"
-          mkdir -p "$SRCDEST" aur
+          mkdir -p "$SRCDEST" pkgbuilds
           chown -R builder "$SRCDEST"
 
           # only a release that does not exist yet means "nothing published": a fetch
@@ -80,69 +80,86 @@ jobs:
               END            { flush() }'
           }
 
-          entries='[]'
-          while IFS= read -r -u3 pkg || [ -n "$pkg" ]; do
-            case "$pkg" in ''|'#'*) continue ;; esac
+          parse_line() { # $1=packages.txt line -> sets pkg, pkgenv, arch_override, pkgbuild_url
+            local line=$1
             # optional trailing "VAR=VAL ..." goes into makepkg's environment for
             # that package -- the knob some build scripts need to stay unattended.
             # Split before the @arch suffix, which it follows
             pkgenv=""
-            case "$pkg" in *' '*) pkgenv=${pkg#* }; pkg=${pkg%% *} ;; esac
+            case "$line" in *' '*) pkgenv=${line#* }; line=${line%% *} ;; esac
             # optional "pkg@arch1,arch2" forces those build targets regardless of the
             # declared arch= (wrongly-any packages, or x86_64-only labels that build
             # fine elsewhere); paired with --ignorearch at makepkg time
             arch_override=""
-            case "$pkg" in *@*) arch_override=${pkg#*@}; pkg=${pkg%@*} ;; esac
+            case "$line" in *@*) arch_override=${line#*@}; line=${line%@*} ;; esac
+            # a git URL instead of a pkgbase builds a PKGBUILD kept outside the AUR;
+            # pkg stays empty until the clone reads the pkgbase from its .SRCINFO
+            pkgbuild_url="" pkg=$line
+            case "$line" in *://*) pkgbuild_url=$line pkg="" ;; esac
+          }
+
+          current_srcinfo() { # $1=pkgbase $2=makepkg env -> .SRCINFO, with pkgver() run against upstream
+            local dir="pkgbuilds/$1"
+            if ! grep -Eq '^[[:space:]]*pkgver[[:space:]]*\(\)' "$dir/PKGBUILD"; then cat "$dir/.SRCINFO"; return; fi
+            # a pkgver() learns the version from upstream (VCS packages & co.): fetch sources and run it.
+            # --noprepare keeps patching out of the check; drop it if a pkgver() ever needs prepare().
+            # shellcheck disable=SC2086 # $2 is VAR=VAL words
+            (cd "$dir" && sudo -u builder env SRCDEST="$SRCDEST" $2 makepkg -od --noprepare --skippgpcheck </dev/null >&2)
+            (cd "$dir" && sudo -u builder makepkg --printsrcinfo)
+          }
+
+          build_targets() { # $1=pkgbase; .SRCINFO on stdin -> "any", or which of x86_64 aarch64 it supports
+            local arches targets=""
+            arches=$(sed -n 's/^\tarch = //p' | sort -u)
+            if grep -qx any <<<"$arches"; then echo any; return; fi
+            if grep -qx x86_64 <<<"$arches"; then targets=x86_64; fi
+            if grep -qx aarch64 <<<"$arches"; then targets="$targets aarch64"; fi
+            [ -n "$targets" ] || echo "::warning::$1 supports neither x86_64 nor aarch64 (arch: $arches)" >&2
+            printf '%s\n' "${targets# }"
+          }
+
+          outdated() { # $1=target $2=[epoch:]pkgver-pkgrel; .SRCINFO on stdin -> true if a split for $1 is unpublished or older
+            local srcinfo dbs d n have
+            srcinfo=$(cat)
+            if [ "$1" = any ]; then dbs="x86_64 aarch64"; else dbs=$1; fi
+            for d in $dbs; do
+              # per-split arch overrides mean not every split exists on every arch
+              for n in $(srcinfo_names "$d" <<<"$srcinfo"); do
+                have=$(db_ver "$d" "$n")
+                if [ -z "$have" ] || [ "$(vercmp "$2" "$have")" -gt 0 ]; then return 0; fi
+              done
+            done
+            return 1
+          }
+
+          add_entry() { # $1=target -> appends the build-matrix entry of the parsed line for $1 to entries
+            local runner image mkargs=""
+            if [ "$1" = aarch64 ]; then runner=ubuntu-24.04-arm; image=menci/archlinuxarm:base-devel@sha256:bad7da18bd6d4766450075dc59157b6d7e24f50c00a8d2377b88d7d540f2b47d
+            else runner=ubuntu-latest; image=archlinux:base-devel@sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb965c03b2b87b915760d; fi
+            if [ -n "$arch_override" ]; then mkargs="--ignorearch"; fi
+            entries=$(printf '%s' "$entries" | jq -c --arg p "$pkg" --arg a "$1" --arg r "$runner" --arg i "$image" --arg m "$mkargs" --arg e "$pkgenv" --arg u "$pkgbuild_url" \
+              '. + [{pkg: $p, arch: $a, runner: $r, image: $i, mkargs: $m, env: $e, pkgbuild_url: $u}]')
+          }
+
+          entries='[]'
+          while IFS= read -r -u3 line || [ -n "$line" ]; do
+            case "$line" in ''|'#'*) continue ;; esac
+            parse_line "$line"
+            # a URL is cloned before the filter, which needs its pkgbase; an AUR clone after it
+            [ -z "$pkgbuild_url" ] || pkg=$(.github/clone-pkgbuild.sh "$pkgbuild_url" pkgbuilds)
             if [ -n "$ONLY_PKG" ] && [ "$pkg" != "$ONLY_PKG" ]; then continue; fi
+            [ -n "$pkgbuild_url" ] || .github/clone-pkgbuild.sh "$pkg" pkgbuilds >/dev/null
+            chown -R builder "pkgbuilds/$pkg"
 
-            # aur.archlinux.org drops connections from cloud IPs at times; prefer the
-            # official GitHub mirror (branch per package), fall back to the AUR itself
-            git clone --depth=1 -b "$pkg" https://github.com/archlinux/aur.git "aur/$pkg" </dev/null 2>/dev/null \
-              || git clone --depth=1 "https://aur.archlinux.org/$pkg.git" "aur/$pkg" </dev/null
-            [ -f "aur/$pkg/PKGBUILD" ] || { echo "::error::$pkg: no such package on AUR"; exit 1; }
-            chown -R builder "aur/$pkg"
-
-            if grep -Eq '^[[:space:]]*pkgver[[:space:]]*\(\)' "aur/$pkg/PKGBUILD"; then
-              # VCS package: fetch sources and run pkgver() to learn the live upstream version.
-              # --noprepare keeps patching out of the check; drop it if a pkgver() ever needs prepare().
-              (cd "aur/$pkg" && sudo -u builder env SRCDEST="$SRCDEST" $pkgenv makepkg -od --noprepare --skippgpcheck </dev/null >&2)
-              srcinfo=$(cd "aur/$pkg" && sudo -u builder makepkg --printsrcinfo)
-            else
-              srcinfo=$(cat "aur/$pkg/.SRCINFO")
-            fi
-            ver=$(printf '%s\n' "$srcinfo" | srcinfo_ver)
-            arches=$(printf '%s\n' "$srcinfo" | sed -n 's/^\tarch = //p' | sort -u)
-
-            if printf '%s\n' "$arches" | grep -qx any; then
-              targets=any
-            else
-              targets=""
-              printf '%s\n' "$arches" | grep -qx x86_64 && targets="x86_64"
-              printf '%s\n' "$arches" | grep -qx aarch64 && targets="$targets aarch64"
-              [ -n "$targets" ] || echo "::warning::$pkg supports neither x86_64 nor aarch64 (arch: $arches)"
-            fi
-
+            srcinfo=$(current_srcinfo "$pkg" "$pkgenv")
+            ver=$(srcinfo_ver <<<"$srcinfo")
+            targets=$(build_targets "$pkg" <<<"$srcinfo")
             if [ -n "$arch_override" ]; then targets=${arch_override//,/ }; fi
 
             for t in $targets; do
-              if [ "$t" = any ]; then dbs="x86_64 aarch64"; else dbs="$t"; fi
-              need=0
-              if [ "$FORCE" = true ] || [ -n "$ONLY_PKG" ]; then need=1; fi
-              for d in $dbs; do
-                # per-split arch overrides mean not every split exists on every arch
-                for n in $(printf '%s\n' "$srcinfo" | srcinfo_names "$d"); do
-                  have=$(db_ver "$d" "$n")
-                  if [ -z "$have" ] || [ "$(vercmp "$ver" "$have")" -gt 0 ]; then need=1; fi
-                done
-              done
-              if [ "$need" = 1 ]; then
-                if [ "$t" = aarch64 ]; then runner=ubuntu-24.04-arm; image=menci/archlinuxarm:base-devel@sha256:bad7da18bd6d4766450075dc59157b6d7e24f50c00a8d2377b88d7d540f2b47d
-                else runner=ubuntu-latest; image=archlinux:base-devel@sha256:68bfc3b0d277b08a99101dc9b94aaa03e5ae70cf1b4fb965c03b2b87b915760d; fi
-                mkargs=""
-                if [ -n "$arch_override" ]; then mkargs="--ignorearch"; fi
+              if [ "$FORCE" = true ] || [ -n "$ONLY_PKG" ] || outdated "$t" "$ver" <<<"$srcinfo"; then
                 echo "$pkg ($t) $ver: build"
-                entries=$(printf '%s' "$entries" | jq -c --arg p "$pkg" --arg a "$t" --arg r "$runner" --arg i "$image" --arg m "$mkargs" --arg e "$pkgenv" \
-                  '. + [{pkg: $p, arch: $a, runner: $r, image: $i, mkargs: $m, env: $e}]')
+                add_entry "$t"
               else
                 echo "$pkg ($t) $ver: up to date"
               fi
@@ -184,6 +201,10 @@ jobs:
           pacman -Syu --noconfirm git github-cli
           useradd -m builder
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github/clone-pkgbuild.sh
+          sparse-checkout-cone-mode: false
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: srcdest
@@ -196,10 +217,9 @@ jobs:
           set -euo pipefail
           export SRCDEST="$PWD/srcdest" PKGDEST="$PWD/pkgdest"
           mkdir -p "$SRCDEST" "$PKGDEST"
-          git clone --depth=1 -b "${{ matrix.pkg }}" https://github.com/archlinux/aur.git pkgbuild 2>/dev/null \
-            || git clone --depth=1 "https://aur.archlinux.org/${{ matrix.pkg }}.git" pkgbuild
-          chown -R builder "$SRCDEST" "$PKGDEST" pkgbuild
-          cd pkgbuild
+          pkg=$(.github/clone-pkgbuild.sh "${{ matrix.pkgbuild_url || matrix.pkg }}" pkgbuilds)
+          chown -R builder "$SRCDEST" "$PKGDEST" pkgbuilds
+          cd "pkgbuilds/$pkg"
           # some PKGBUILDs wrap a source in a web.archive.org URL; archive.org 503s
           # on runner IPs, so seed SRCDEST from the wrapped origin instead. makepkg
           # still verifies checksums, so a wrong seed fails loudly rather than silently

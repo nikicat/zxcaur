@@ -33,6 +33,11 @@ builds anything listed that is missing or outdated in the published repo.
 - `pkg VAR=VAL ...` passes those variables into makepkg's environment for
   that package -- for build scripts that prompt unless a knob is set (e.g.
   `osxcross-git ... BUILD_FLAVOR=stable`). Combines with `@arch`.
+- A git URL instead of a name (`https://github.com/you/foo-bin.git`) builds
+  a PKGBUILD kept outside the AUR; its pkgbase comes from the repo's
+  `.SRCINFO` (that is the name `-f package=` takes). Suffixes
+  (`@arch`, `VAR=VAL`) work the same. A `pkgver()` that asks upstream for its
+  version without downloading the payload keeps the check cheap.
 - AUR dependencies must be listed too. Build containers have this repo in
   their pacman.conf, so already-published packages resolve as dependencies.
   Adding a dependent and its AUR dep in one push makes the dependent's first
