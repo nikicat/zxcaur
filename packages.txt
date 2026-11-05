@@ -21,3 +21,13 @@ electron43-bin@aarch64
 https://github.com/nikicat/visual-studio-code-electron-bin.git
 rio-nik@x86_64,aarch64
 steam-beta
+yay
+go-grip
+python-setuptools-reproducible
+patool
+vkbasalt-cli
+fvs2
+bottles
+nvidia-580xx-utils
+nvidia-580xx-settings
+lib32-nvidia-580xx-utils
