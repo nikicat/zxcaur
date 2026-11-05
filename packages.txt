@@ -32,3 +32,4 @@ nvidia-580xx-utils
 nvidia-580xx-settings
 lib32-nvidia-580xx-utils
 secrets-dispatcher
+deno-stable-bin@aarch64
