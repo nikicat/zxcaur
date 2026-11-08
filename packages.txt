@@ -34,3 +34,8 @@ lib32-nvidia-580xx-utils
 secrets-dispatcher
 deno-stable-bin@aarch64
 foundry-rs
+rustdesk
+ente-cli
+enpasscli
+aurutils
+retoswap
