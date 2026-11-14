@@ -39,3 +39,4 @@ ente-cli
 enpasscli
 aurutils
 retoswap
+powershell-bin
