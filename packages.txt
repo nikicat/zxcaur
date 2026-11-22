@@ -59,3 +59,4 @@ dotnet-system-data-sqlclient
 dotnet-wcf
 powershell-build-deps
 powershell@x86_64
+https://github.com/nikicat/aur-antigravity.git
