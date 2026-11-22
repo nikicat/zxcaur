@@ -60,3 +60,4 @@ dotnet-wcf
 powershell-build-deps
 powershell@x86_64
 https://github.com/nikicat/aur-antigravity.git
+https://github.com/nikicat/aur-antigravity-cli.git

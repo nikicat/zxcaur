@@ -64,7 +64,8 @@ builds anything listed that is missing or outdated in the published repo.
   package: aarch64 gets `electronNN-bin` from here. When VS Code moves to a new
   Electron major, bump `_electronversion` in the fork and the `electronNN-bin`
   line in `packages.txt` together.
-- `antigravity` is built from
-  [a fork](https://github.com/nikicat/aur-antigravity) whose `pkgver()` asks
-  Google's Antigravity updater (`/releases`) for the latest version; the
-  AUR package lags behind releases.
+- `antigravity` and `antigravity-cli` are built from forks
+  ([aur-antigravity](https://github.com/nikicat/aur-antigravity),
+  [aur-antigravity-cli](https://github.com/nikicat/aur-antigravity-cli)) that
+  take the latest release from Google's updater (`/releases`), because the AUR
+  packages lag behind. Their committed `pkgver=0` is a placeholder.
