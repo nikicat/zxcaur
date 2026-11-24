@@ -15,7 +15,7 @@ on:
         default: ''
   push:
     branches: [main]
-    paths: [packages.txt, .github/workflows/build.yml]
+    paths: [packages.txt, .github/workflows/build.yml, .github/repo-lib.sh]
 
 permissions:
   contents: write
@@ -80,23 +80,7 @@ jobs:
               END            { flush() }'
           }
 
-          parse_line() { # $1=packages.txt line -> sets pkg, pkgenv, arch_override, pkgbuild_url
-            local line=$1
-            # optional trailing "VAR=VAL ..." goes into makepkg's environment for
-            # that package -- the knob some build scripts need to stay unattended.
-            # Split before the @arch suffix, which it follows
-            pkgenv=""
-            case "$line" in *' '*) pkgenv=${line#* }; line=${line%% *} ;; esac
-            # optional "pkg@arch1,arch2" forces those build targets regardless of the
-            # declared arch= (wrongly-any packages, or x86_64-only labels that build
-            # fine elsewhere); paired with --ignorearch at makepkg time
-            arch_override=""
-            case "$line" in *@*) arch_override=${line#*@}; line=${line%@*} ;; esac
-            # a git URL instead of a pkgbase builds a PKGBUILD kept outside the AUR;
-            # pkg stays empty until the clone reads the pkgbase from its .SRCINFO
-            pkgbuild_url="" pkg=$line
-            case "$line" in *://*) pkgbuild_url=$line pkg="" ;; esac
-          }
+          REPO=$GITHUB_REPOSITORY; . .github/repo-lib.sh
 
           current_srcinfo() { # $1=pkgbase $2=makepkg env -> .SRCINFO, with pkgver() run against upstream
             local dir="pkgbuilds/$1"
@@ -205,7 +189,9 @@ jobs:
           echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          sparse-checkout: .github/clone-pkgbuild.sh
+          sparse-checkout: |
+            .github/clone-pkgbuild.sh
+            .github/repo-lib.sh
           sparse-checkout-cone-mode: false
       - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -251,7 +237,7 @@ jobs:
           shopt -s nullglob
           files=(pkgdest/*.pkg.tar.zst)
 
-          release_lock() { gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/$1" >/dev/null 2>&1 || true; }
+          REPO=$GITHUB_REPOSITORY; . .github/repo-lib.sh
 
           case "${{ matrix.arch }}" in
             any) arches="x86_64 aarch64" ;;
@@ -260,23 +246,8 @@ jobs:
 
           for arch in $arches; do
             tag=repo-$arch
-            lock=heads/locks/publish-$arch
-
-            # atomic ref creation is the index mutex: at most one publisher per arch.
-            # ponytail: takeover treats our wait as lock age; wrong only if the publish
-            # queue is deeper than ~30 one-minute publishes, and a lost entry self-heals
-            # on the next scheduled run
-            waited=0
-            until gh api -X POST "repos/$GITHUB_REPOSITORY/git/refs" \
-                -f ref="refs/$lock" -f sha="$GITHUB_SHA" >/dev/null 2>&1; do
-              sleep 15
-              waited=$((waited+15))
-              if [ "$waited" -ge 1800 ]; then
-                echo "::warning::taking over stale publish lock for $arch"
-                release_lock "$lock"
-              fi
-            done
-            trap "release_lock '$lock'" EXIT
+            lock_db "$arch" "$GITHUB_SHA"
+            trap "unlock_db $arch" EXIT
 
             gh release view "$tag" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1 || \
               gh release create "$tag" -R "$GITHUB_REPOSITORY" --latest=false \
@@ -301,14 +272,9 @@ jobs:
               for o in $old; do gh release delete-asset "$tag" "$o" -R "$GITHUB_REPOSITORY" -y; done
             done
 
-            # pacman fetches zxcaur.db / zxcaur.files: publish the archives under both names
-            rm -f repo/zxcaur.db repo/zxcaur.files
-            cp repo/zxcaur.db.tar.gz repo/zxcaur.db
-            cp repo/zxcaur.files.tar.gz repo/zxcaur.files
-            gh release upload "$tag" -R "$GITHUB_REPOSITORY" --clobber \
-              "${files[@]}" repo/zxcaur.db repo/zxcaur.db.tar.gz repo/zxcaur.files repo/zxcaur.files.tar.gz
+            publish_db "$tag" repo "${files[@]}"
 
-            release_lock "$lock"
+            unlock_db "$arch"
             trap - EXIT
           done
 
